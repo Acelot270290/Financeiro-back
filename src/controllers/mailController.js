@@ -125,18 +125,27 @@ export const getEmailsWithAttachments = async (emailId) => {
         // Download attachments
         const downloadedAttachments = [];
         for (let attachment of attachments) {
-          const partData = await connection.getPartData(item, attachment);
-          const filename = attachment.disposition.params.filename;
+          try {
+            const partData = await connection.getPartData(item, attachment);
+            const rawFilename =
+              attachment?.disposition?.params?.filename || attachment?.params?.name || "";
 
-          // Check if the attachment is a PDF
-          const isPDF = filename.toLowerCase().endsWith(".pdf");
+            const filename = rawFilename !== ""
+              ? rawFilename.replace(/\s/g, "_")
+              : `anexo-${Date.now()}.pdf`;
 
-          downloadedAttachments.push({
-            filename: filename,
-            data: partData,
-            isPDF: isPDF,
-          });
+            const isPDF = filename.toLowerCase().endsWith(".pdf");
+
+            downloadedAttachments.push({
+              filename,
+              data: partData,
+              isPDF,
+            });
+          } catch (err) {
+            console.error("Erro ao baixar anexo:", err);
+          }
         }
+
 
         emailsWithAttachments.push({
           subject,
