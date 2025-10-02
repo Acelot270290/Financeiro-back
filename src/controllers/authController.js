@@ -8,6 +8,8 @@ dotenv.config();
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
+  // ⚠️ Se usar RLS e precisar atualizar a senha do usuário via backend,
+  // prefira SERVICE_ROLE_KEY aqui. Caso contrário, garanta policy de UPDATE.
   process.env.SUPABASE_ANON_KEY
 );
 
@@ -21,7 +23,8 @@ export const signup = async (req, res) => {
       .select("email")
       .eq("email", email);
 
-    if (userExists.length > 0) {
+    if (userExistsError) throw userExistsError;
+    if (userExists && userExists.length > 0) {
       throw new Error("Este email já está cadastrado");
     }
 
@@ -31,7 +34,14 @@ export const signup = async (req, res) => {
     //insert user in system_users
     const { data: user, error: userError } = await supabase
       .from("system_users")
-      .insert([{ email: email, password_hash: hashedPassword, name: name, permissions: permissions }]);
+      .insert([
+        {
+          email: email,
+          password_hash: hashedPassword,
+          name: name,
+          permissions: permissions,
+        },
+      ]);
 
     if (userError) {
       throw userError;
@@ -60,7 +70,7 @@ export const preLogin = async (req, res) => {
       throw userError;
     }
 
-    if (user.length === 0) {
+    if (!user || user.length === 0) {
       throw new Error("Email ou senha incorretos");
     }
 
@@ -81,7 +91,7 @@ export const preLogin = async (req, res) => {
       );
 
       //update user with secret
-      const { data: update, error: updateError } = await supabase
+      const { error: updateError } = await supabase
         .from("system_users")
         .update({ totp_secret: secret })
         .eq("id", user[0].id);
@@ -123,7 +133,7 @@ export const login = async (req, res) => {
       throw userError;
     }
 
-    if (user.length === 0) {
+    if (!user || user.length === 0) {
       throw new Error("Ocorreu um erro, tente novamente");
     }
 
@@ -140,7 +150,6 @@ export const login = async (req, res) => {
       secret: user[0].totp_secret,
     });
 
-    //APENAS PARA TESTE, DEPOIS TEM QUE VOLTAR A CONDIÇÃO DE FALSO
     if (!isValid) {
       throw new Error("Código do Google Authenticator inválido");
     }
@@ -166,7 +175,6 @@ export const login = async (req, res) => {
   }
 };
 
-
 export const checkGoogleAuth = async (req, res) => {
   try {
     const { userId, google_auth_code } = req.body;
@@ -181,7 +189,7 @@ export const checkGoogleAuth = async (req, res) => {
       throw userError;
     }
 
-    if (user.length === 0) {
+    if (!user || user.length === 0) {
       throw new Error("Ocorreu um erro, tente novamente");
     }
 
@@ -191,16 +199,72 @@ export const checkGoogleAuth = async (req, res) => {
       secret: user[0].totp_secret,
     });
 
-    //APENAS PARA TESTE, DEPOIS TEM QUE VOLTAR A CONDIÇÃO DE FALSO
     if (!isValid) {
       throw new Error("Código do Google Authenticator inválido");
     }
-
 
     res.json({
       message: "Google Authenticator validado com sucesso",
     });
   } catch (error) {
     res.json({ error: true, message: error.message });
+  }
+};
+
+/**
+ * POST /auth/reset-password
+ * Body: { email, password, password_confirmation }
+ */
+export const resetPassword = async (req, res) => {
+  try {
+    const { email, password, password_confirmation } = req.body;
+
+    if (!email || !password || !password_confirmation) {
+      return res
+        .status(400)
+        .json({ error: true, message: "Campos obrigatórios ausentes." });
+    }
+    if (password !== password_confirmation) {
+      return res
+        .status(400)
+        .json({ error: true, message: "As senhas não conferem." });
+    }
+    if (password.length < 8) {
+      return res
+        .status(400)
+        .json({ error: true, message: "A senha deve ter no mínimo 8 caracteres." });
+    }
+
+    // busca o usuário pelo e-mail
+    const { data: users, error: findErr } = await supabase
+      .from("system_users")
+      .select("id, email")
+      .eq("email", email)
+      .limit(1);
+
+    if (findErr) throw findErr;
+    if (!users || users.length === 0) {
+      return res.status(404).json({ error: true, message: "Usuário não encontrado." });
+    }
+
+    const userId = users[0].id;
+
+    // gera o hash e atualiza
+    const hashed = await bcrypt.hash(password, 10);
+
+    const { error: updateErr } = await supabase
+      .from("system_users")
+      .update({ password_hash: hashed })
+      .eq("id", userId);
+
+    if (updateErr) throw updateErr;
+
+
+    return res.json({ error: false, message: "Senha redefinida com sucesso." });
+  } catch (error) {
+    console.error("resetPassword:", error);
+    return res
+      .status(400)
+      .json({ error: true, message: error.message || "Erro ao redefinir senha." });
   }
 };
